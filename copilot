@@ -1,140 +1,92 @@
-#include <Wire.h> // obsługa I2C
+#include <Wire.h>
+#include <Adafruit_NeoPixel.h>
+#include <QMC5883LCompass.h>
+#include <IRremote.h>
+#include <Servo.h>
+
 double scale = 1.0;
-
-//#include <Adafruit_MCP23008.h>  //ekspander
-//Adafruit_MCP23008 ekspander;
-
-#include <Adafruit_NeoPixel.h>  // linijka kompasu
 Adafruit_NeoPixel linijka = Adafruit_NeoPixel(8, A2, NEO_GRB + NEO_KHZ800);
-
-#include <QMC5883LCompass.h>    // kompas - komunikacja domyślnie 0x0D
 QMC5883LCompass compass;
-
-#include <IRremote.h>           //komunikacja IR
 int RECV_PIN = 3;
 IRrecv irrecv(RECV_PIN);
 decode_results results;
-
-#include <Servo.h>              // serwo od czujnika odległości
 Servo serwo;
 #define SERWO_PIN 11
-
-#define trigPin 7             //czujnik odległości (trigPin na ekspanderze - 7)
+#define trigPin 7
 #define echoPin 8
-
-#define L_PWM 5                 // silniki
+#define L_PWM 5
 #define L_DIR 4
 #define R_PWM 6
 #define R_DIR 9
 #define PWM_MAX 165
-
 #define LED_PIN 13
 
-
 void setup() {
-
-/*Serial.begin(9600);
-Wire.begin();
-Wire.beginTransmission(0x0D); //start talking to slave
-Wire.write(0x0B); 
-Wire.write(0x01); 
-Wire.endTransmission();
-
-Wire.beginTransmission(0x0D); //start talking to slave
-Wire.write(0x09);
-Wire.write(0x1D);
-Wire.endTransmission();*/
-
-pinMode(13, OUTPUT);
-
-//ekspander
-/*ekspander.begin();            //komunikacja domyślnie 0x20
-
-ekspander.pinMode(0, OUTPUT);
-ekspander.pinMode(1, OUTPUT);
-ekspander.pinMode(2, OUTPUT);
-ekspander.pinMode(3, OUTPUT);
-ekspander.pinMode(4, OUTPUT);
-ekspander.pinMode(5, OUTPUT);
-ekspander.pinMode(6, OUTPUT);
-ekspander.pinMode(7, OUTPUT);   //trigPin */
-  
-//konfiguracja komunikacji IR I BLUETOOTH
-irrecv.enableIRIn();
-Serial.begin(9600);
-
-// konfiguracja serwa - ustawienie na pozycji środkowej
-serwo.attach(SERWO_PIN);
-serwo.write(90);
-
-//konfiguracja czujnika odległości
-pinMode (trigPin, OUTPUT);  //trigPin przeniesiony na ekspander - 7
-pinMode (echoPin, INPUT);
-
-// konfiguracja silników
-pinMode (L_DIR, OUTPUT);
-pinMode (R_DIR, OUTPUT);
-pinMode (L_PWM, OUTPUT);
-pinMode (R_PWM, OUTPUT);
-
-};
+  pinMode(13, OUTPUT);
+  irrecv.enableIRIn();
+  Serial.begin(9600);
+  serwo.attach(SERWO_PIN);
+  serwo.write(90);
+  pinMode(trigPin, OUTPUT);
+  pinMode(echoPin, INPUT);
+  pinMode(L_DIR, OUTPUT);
+  pinMode(R_DIR, OUTPUT);
+  pinMode(L_PWM, OUTPUT);
+  pinMode(R_PWM, OUTPUT);
+}
 
 void loop() {
+  if (irrecv.decode(&results)) {
+    translateIR();
+    irrecv.resume();
+  }
 
-if (irrecv.decode(&results)) {
-  translateIR();
-  irrecv.resume();
-  };
+  if (Serial.available()) {
+    serialEvent();
+  }
 
-if (Serial.available()) {
-  serialEvent();
-};
+  // Odczyt kompasu co 100 ms
+  static unsigned long lastCompassRead = 0;
+  if (millis() - lastCompassRead >= 100) {
+    readCompass();
+    lastCompassRead = millis();
+  }
+}
 
-//sekcja kompasu
-int x, y, z; //triple axis data
+void readCompass() {
+  int x, y, z;
 
-//Tell the QMC what regist to begin writing data into
-Wire.beginTransmission(0x0D);
-Wire.write(0x00); //start with register 00H for QMC5883L
-Wire.endTransmission();
+  Wire.beginTransmission(0x0D);
+  Wire.write(0x00);
+  Wire.endTransmission();
 
-//Read the data.. 2, 8 bit bytes for each axis.. 6 total bytes
-Wire.requestFrom(0x0D, 6);
-//read 6 registers in order; register location (i.e.00H)indexes by one once read
-if (6 <= Wire.available()) {
-//note the order of following statements matters
-//as each register will be read in sequence starting from data register 00H to 05H
-//where order is xLSB,xMSB,yLSB,yMSB,zLSB,zMSB
-//this is different from HMC5883L!
-//data registers are 03 to 08 
-//where order is xMSB,xLSB,zMSB,zLSB,yMSB,yLSB
-x = Wire.read(); //LSB x; 
-x |= Wire.read()<<8; //MSB x; bitshift left 8, then bitwise OR to make "x" 
-String x_str = String(x);
-int x_wynik = x_str.toInt();
-// x*=scale;
-y = Wire.read(); //LSB y 
-y |= Wire.read()<<8; //MSB y;
-String y_str = String(y);
-int y_wynik = y_str.toInt(); 
-// y*=scale;
-z = Wire.read(); //LSB z; irrelevant for compass 
-z |= Wire.read()<<8; //MSB z;
-String z_str = String(z);
-int z_wynik = z_str.toInt();
+  Wire.requestFrom(0x0D, 6);
+  if (6 <= Wire.available()) {
+    x = Wire.read();
+    x |= Wire.read() << 8;
+    y = Wire.read();
+    y |= Wire.read() << 8;
+    z = Wire.read();
+    z |= Wire.read() << 8;
 
-// z*=scale;
+    double azimut = 180 * atan2(y, x) / 3.141592654;
+    azimut += 0 - (19 / 60);
 
-double azimut;
-azimut = 180 * atan2(y_wynik, x_wynik) / 3.141592654;  //values will range from +180 to -180 degrees
-azimut +=0-(19/60);//Adjust for local magnetic declination
+    if (azimut < 0) {
+      azimut += 360;
+    }
 
-  if (!(azimut >= 0)) {
-     azimut = 360 + azimut;
-  } else {
-    azimut = azimut;
-  };
-           //north
+  // Aktualizacja linijki LED
+       linijka.begin();
+       linijka.clear();
+
+    updateLED(azimut);
+  }
+}
+
+void updateLED(double azimut) {
+  // Twoja logika aktualizacji linijki LED
+   //north
           if((azimut < 22.5)  || (azimut > 337.5 ))  {
             linijka.setPixelColor(0, linijka.Color(0, 0, 0));
             linijka.setPixelColor(1, linijka.Color(0, 0, 0));
@@ -229,55 +181,7 @@ azimut +=0-(19/60);//Adjust for local magnetic declination
             linijka.setPixelColor(6, linijka.Color(0, 0, 0));
             linijka.setPixelColor(7, linijka.Color(0, 0, 0));
             linijka.show();
-          }; 
-
-  linijka.begin();
-  linijka.clear();
-};
-
-          
-
-/*int i = 0;
-for (i=0; i <= 3; i++) {
-  ekspander.digitalWrite(i, HIGH);
-  delay(500);
-}
-for (i=0; i <= 3; i++) {
-  ekspander.digitalWrite(i, LOW);
-  delay(500);
-}*/
-};
-
-
-void leftMotor(int V) {
-  if (V > 0) {
-      V = map(V, 0, 100, 0, PWM_MAX);
-      digitalWrite(L_DIR, 0);
-      analogWrite(L_PWM, V);
-  } else {
-      V = abs(V);
-      V = map(V, 0, 100, 0, PWM_MAX);
-      digitalWrite(L_DIR, 1);
-      analogWrite(L_PWM, V);
-  }
-}
-
-void rightMotor(int V) {
-  if (V > 0) {
-      V = map(V, 0, 100, 0, PWM_MAX);
-      digitalWrite(R_DIR, 0);
-      analogWrite(R_PWM, V);
-  } else {
-      V = abs(V);
-      V = map(V, 0, 100, 0, PWM_MAX);
-      digitalWrite(R_DIR, 1);
-      analogWrite(R_PWM, V);
-  }
-}
-
-void stopMotors() {
-  analogWrite(L_PWM, 0);
-  analogWrite(R_PWM, 0);
+          };
 }
 
 void translateIR(){
@@ -315,6 +219,66 @@ void translateIR(){
     Serial.println(results.value, HEX);
   }
   delay(500);
+}
+
+void serialEvent() {
+  while (Serial.available()) {
+    char state = (char)Serial.read();
+    if(state == '5') {
+      digitalWrite(LED_PIN, 0);
+      stopMotors();
+    } else if(state == '2') {
+      digitalWrite(LED_PIN, 1);
+      leftMotor(40);
+      rightMotor(40);
+    } else if(state == '8') {
+      digitalWrite(LED_PIN, 1);
+      leftMotor(-40);
+      rightMotor(-40);
+    } else if(state == '4') {
+      digitalWrite(LED_PIN, 1);
+      leftMotor(-30);
+      rightMotor(30);
+    } else if(state == '6') {
+      digitalWrite(LED_PIN, 1);
+      leftMotor(30);
+      rightMotor(-30);
+    } else if(state == '0') {
+      digitalWrite(LED_PIN, 1);
+      szukacz();
+    }
+  }
+}
+
+void leftMotor(int V) {
+  if (V > 0) {
+      V = map(V, 0, 100, 0, PWM_MAX);
+      digitalWrite(L_DIR, 0);
+      analogWrite(L_PWM, V);
+  } else {
+      V = abs(V);
+      V = map(V, 0, 100, 0, PWM_MAX);
+      digitalWrite(L_DIR, 1);
+      analogWrite(L_PWM, V);
+  }
+}
+
+void rightMotor(int V) {
+  if (V > 0) {
+      V = map(V, 0, 100, 0, PWM_MAX);
+      digitalWrite(R_DIR, 0);
+      analogWrite(R_PWM, V);
+  } else {
+      V = abs(V);
+      V = map(V, 0, 100, 0, PWM_MAX);
+      digitalWrite(R_DIR, 1);
+      analogWrite(R_PWM, V);
+  }
+}
+
+void stopMotors() {
+  analogWrite(L_PWM, 0);
+  analogWrite(R_PWM, 0);
 }
 
 void szukacz() {
@@ -358,7 +322,6 @@ delay(100);
 }
 }
 
-
 int ZmierzOdleglosc() {
 long czas, dystans;
 
@@ -372,33 +335,4 @@ czas = pulseIn(echoPin, HIGH);
 dystans = czas /58;
 
 return dystans;
-}
-
-void serialEvent() {
-  while (Serial.available()) {
-    char state = (char)Serial.read();
-    if(state == '5') {
-      digitalWrite(LED_PIN, 0);
-      stopMotors();
-    } else if(state == '2') {
-      digitalWrite(LED_PIN, 1);
-      leftMotor(40);
-      rightMotor(40);
-    } else if(state == '8') {
-      digitalWrite(LED_PIN, 1);
-      leftMotor(-40);
-      rightMotor(-40);
-    } else if(state == '4') {
-      digitalWrite(LED_PIN, 1);
-      leftMotor(-30);
-      rightMotor(30);
-    } else if(state == '6') {
-      digitalWrite(LED_PIN, 1);
-      leftMotor(30);
-      rightMotor(-30);
-    } else if(state == '0') {
-      digitalWrite(LED_PIN, 1);
-      szukacz();
-    }
-  }
 }
